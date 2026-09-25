@@ -10,7 +10,8 @@
   do {                                                                  \
     if (UNLIKELY(!(cond)))                                              \
       [&]() __attribute__((cold, noinline, noreturn)) {                 \
-        std::cerr << "ASSERT : " << (msg) << std::endl;                 \
+        const auto &assert_msg = (msg);                                 \
+        std::cerr << "ASSERT : " << assert_msg << std::endl;            \
         exit(EXIT_FAILURE);                                             \
       }();                                                              \
   } while (false)

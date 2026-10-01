@@ -3,6 +3,7 @@
 #include <iostream>
 #include <vector>
 #include <atomic>
+#include <bit>
 
 #include "macros.h"
 
@@ -11,7 +12,8 @@ namespace Common {
   class LFQueue final {
   public:
     explicit LFQueue(std::size_t num_elems) :
-        store_(num_elems, T()) /* pre-allocation of vector storage. */ {
+        store_(num_elems, T()) /* pre-allocation of vector storage. */, index_mask_(num_elems - 1) {
+      ASSERT(std::has_single_bit(num_elems), "LFQueue size must be a power of two, got:" + std::to_string(num_elems));
     }
 
     /// Only the writer thread uses next_write_index_, so it can be accessed relaxed.
@@ -21,7 +23,7 @@ namespace Common {
 
     /// The release increment of num_elements_ publishes the element written before it to the reader.
     auto updateWriteIndex() noexcept {
-      next_write_index_.store((next_write_index_.load(std::memory_order_relaxed) + 1) % store_.size(), std::memory_order_relaxed);
+      next_write_index_.store((next_write_index_.load(std::memory_order_relaxed) + 1) & index_mask_, std::memory_order_relaxed);
       num_elements_.fetch_add(1, std::memory_order_release);
     }
 
@@ -33,7 +35,7 @@ namespace Common {
 
     /// The release decrement tells the writer the slot is no longer being read.
     auto updateReadIndex() noexcept {
-      next_read_index_.store((next_read_index_.load(std::memory_order_relaxed) + 1) % store_.size(), std::memory_order_relaxed); // wrap around at the end of container size.
+      next_read_index_.store((next_read_index_.load(std::memory_order_relaxed) + 1) & index_mask_, std::memory_order_relaxed); // wrap around at the end of container size.
       // Build the message only on failure: ASSERT is a function, so its message would be built on every pop.
       // See https://github.com/PacktPublishing/Building-Low-Latency-Applications-with-CPP/pull/11
       if (UNLIKELY(num_elements_.load(std::memory_order_relaxed) == 0))
@@ -63,6 +65,9 @@ namespace Common {
     /// Underlying container of data accessed in FIFO order.
     /// Read-only after construction, so it must not share a cache line with the indices written below.
     std::vector<T> store_;
+
+    /// store_.size() - 1. The size is a power of two, so index & mask wraps an index without a division.
+    const size_t index_mask_;
 
     /// Atomic trackers for next index to write new data to and read new data from.
     /// Each lives on its own cache line so the writer and the reader do not invalidate each other's line.

@@ -52,13 +52,18 @@ namespace Common {
     LFQueue &operator=(const LFQueue &&) = delete;
 
   private:
+    /// Larger than a 64-byte cache line because Intel's spatial prefetcher pulls lines in adjacent pairs.
+    static constexpr size_t CACHE_LINE_SIZE = 128;
+
     /// Underlying container of data accessed in FIFO order.
+    /// Read-only after construction, so it must not share a cache line with the indices written below.
     std::vector<T> store_;
 
     /// Atomic trackers for next index to write new data to and read new data from.
-    std::atomic<size_t> next_write_index_ = {0};
-    std::atomic<size_t> next_read_index_ = {0};
+    /// Each lives on its own cache line so the writer and the reader do not invalidate each other's line.
+    alignas(CACHE_LINE_SIZE) std::atomic<size_t> next_write_index_ = {0};
+    alignas(CACHE_LINE_SIZE) std::atomic<size_t> next_read_index_ = {0};
 
-    std::atomic<size_t> num_elements_ = {0};
+    alignas(CACHE_LINE_SIZE) std::atomic<size_t> num_elements_ = {0};
   };
 }

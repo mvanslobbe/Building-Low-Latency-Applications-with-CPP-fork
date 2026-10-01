@@ -29,7 +29,10 @@ namespace Common {
 
     auto updateReadIndex() noexcept {
       next_read_index_ = (next_read_index_ + 1) % store_.size(); // wrap around at the end of container size.
-      ASSERT(num_elements_ != 0, "Read an invalid element in:" + std::to_string(pthread_self()));
+      // Build the message only on failure: ASSERT is a function, so its message would be built on every pop.
+      // See https://github.com/PacktPublishing/Building-Low-Latency-Applications-with-CPP/pull/11
+      if (UNLIKELY(num_elements_ == 0))
+        ASSERT(false, "Read an invalid element in:" + std::to_string(pthread_self()));
       num_elements_--;
     }
 

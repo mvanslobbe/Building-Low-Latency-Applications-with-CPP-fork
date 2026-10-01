@@ -16,35 +16,36 @@ namespace Common {
       ASSERT(std::has_single_bit(num_elems), "LFQueue size must be a power of two, got:" + std::to_string(num_elems));
     }
 
-    /// Only the writer thread uses next_write_index_, so it can be accessed relaxed.
     auto getNextToWriteTo() noexcept {
-      return &store_[next_write_index_.load(std::memory_order_relaxed)];
+      return &store_[next_write_index_.load(std::memory_order_relaxed) & index_mask_];
     }
 
-    /// The release increment of num_elements_ publishes the element written before it to the reader.
+    /// Only the writer thread modifies next_write_index_, so it can read its own index relaxed.
+    /// The release store publishes the element written before it to the reader.
     auto updateWriteIndex() noexcept {
-      next_write_index_.store((next_write_index_.load(std::memory_order_relaxed) + 1) & index_mask_, std::memory_order_relaxed);
-      num_elements_.fetch_add(1, std::memory_order_release);
+      next_write_index_.store(next_write_index_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
     }
 
-    /// Only the reader thread uses next_read_index_. The acquire load in size() pairs with the
-    /// release increment in updateWriteIndex(), so the element is fully visible.
+    /// The acquire load pairs with the release store in updateWriteIndex(), so the element is fully visible.
     auto getNextToRead() const noexcept -> const T * {
-      return (size() ? &store_[next_read_index_.load(std::memory_order_relaxed)] : nullptr);
+      const auto read_index = next_read_index_.load(std::memory_order_relaxed);
+      return (read_index != next_write_index_.load(std::memory_order_acquire) ? &store_[read_index & index_mask_] : nullptr);
     }
 
-    /// The release decrement tells the writer the slot is no longer being read.
+    /// Only the reader thread modifies next_read_index_.
+    /// The release store tells the writer the slot is no longer being read.
     auto updateReadIndex() noexcept {
-      next_read_index_.store((next_read_index_.load(std::memory_order_relaxed) + 1) & index_mask_, std::memory_order_relaxed); // wrap around at the end of container size.
       // Build the message only on failure: ASSERT is a function, so its message would be built on every pop.
       // See https://github.com/PacktPublishing/Building-Low-Latency-Applications-with-CPP/pull/11
-      if (UNLIKELY(num_elements_.load(std::memory_order_relaxed) == 0))
+      if (UNLIKELY(size() == 0))
         ASSERT(false, "Read an invalid element in:" + std::to_string(pthread_self()));
-      num_elements_.fetch_sub(1, std::memory_order_release);
+      next_read_index_.store(next_read_index_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
     }
 
+    /// Load the read index first: the write index never falls behind it, so the difference cannot underflow.
     auto size() const noexcept {
-      return num_elements_.load(std::memory_order_acquire);
+      const auto read_index = next_read_index_.load(std::memory_order_acquire);
+      return next_write_index_.load(std::memory_order_acquire) - read_index;
     }
 
     /// Deleted default, copy & move constructors and assignment-operators.
@@ -71,9 +72,9 @@ namespace Common {
 
     /// Atomic trackers for next index to write new data to and read new data from.
     /// Each lives on its own cache line so the writer and the reader do not invalidate each other's line.
+    /// The indices only ever increase and are wrapped on access with index_mask_, so size() is their difference
+    /// and no counter has to be shared between the two threads.
     alignas(CACHE_LINE_SIZE) std::atomic<size_t> next_write_index_ = {0};
     alignas(CACHE_LINE_SIZE) std::atomic<size_t> next_read_index_ = {0};
-
-    alignas(CACHE_LINE_SIZE) std::atomic<size_t> num_elements_ = {0};
   };
 }

@@ -14,30 +14,35 @@ namespace Common {
         store_(num_elems, T()) /* pre-allocation of vector storage. */ {
     }
 
+    /// Only the writer thread uses next_write_index_, so it can be accessed relaxed.
     auto getNextToWriteTo() noexcept {
-      return &store_[next_write_index_];
+      return &store_[next_write_index_.load(std::memory_order_relaxed)];
     }
 
+    /// The release increment of num_elements_ publishes the element written before it to the reader.
     auto updateWriteIndex() noexcept {
-      next_write_index_ = (next_write_index_ + 1) % store_.size();
-      num_elements_++;
+      next_write_index_.store((next_write_index_.load(std::memory_order_relaxed) + 1) % store_.size(), std::memory_order_relaxed);
+      num_elements_.fetch_add(1, std::memory_order_release);
     }
 
+    /// Only the reader thread uses next_read_index_. The acquire load in size() pairs with the
+    /// release increment in updateWriteIndex(), so the element is fully visible.
     auto getNextToRead() const noexcept -> const T * {
-      return (size() ? &store_[next_read_index_] : nullptr);
+      return (size() ? &store_[next_read_index_.load(std::memory_order_relaxed)] : nullptr);
     }
 
+    /// The release decrement tells the writer the slot is no longer being read.
     auto updateReadIndex() noexcept {
-      next_read_index_ = (next_read_index_ + 1) % store_.size(); // wrap around at the end of container size.
+      next_read_index_.store((next_read_index_.load(std::memory_order_relaxed) + 1) % store_.size(), std::memory_order_relaxed); // wrap around at the end of container size.
       // Build the message only on failure: ASSERT is a function, so its message would be built on every pop.
       // See https://github.com/PacktPublishing/Building-Low-Latency-Applications-with-CPP/pull/11
-      if (UNLIKELY(num_elements_ == 0))
+      if (UNLIKELY(num_elements_.load(std::memory_order_relaxed) == 0))
         ASSERT(false, "Read an invalid element in:" + std::to_string(pthread_self()));
-      num_elements_--;
+      num_elements_.fetch_sub(1, std::memory_order_release);
     }
 
     auto size() const noexcept {
-      return num_elements_.load();
+      return num_elements_.load(std::memory_order_acquire);
     }
 
     /// Deleted default, copy & move constructors and assignment-operators.
